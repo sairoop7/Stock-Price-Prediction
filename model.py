@@ -22,10 +22,11 @@ class StockPredictor:
         self.df = None
         self.scaler = None
         self.model = None
-        self.prediction_days = 1  # 1-day prediction
+        self.prediction_days = 7  # predict next 7 days
         self.future_predictions = None
         self.future_dates = None
 
+    # Fetch historical data
     def get_user_input(self, ticker):
         self.ticker = ticker
         end_date = dt.datetime.now()
@@ -40,12 +41,14 @@ class StockPredictor:
         self.df.ffill(inplace=True)
         return self.df
 
+    # Add technical indicators
     def add_technical_indicators(self):
         self.df['MA_50'] = self.df['Close'].rolling(window=50).mean()
         self.df['MA_200'] = self.df['Close'].rolling(window=200).mean()
         self.df.ffill(inplace=True)
         return self.df
 
+    # Prepare data for LSTM
     def prepare_data(self, look_back=60):
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         scaled_data = self.scaler.fit_transform(self.df[['Close']].values)
@@ -58,68 +61,65 @@ class StockPredictor:
         split = int(0.9 * len(X))
         return X[:split], X[split:], y[:split], y[split:]
 
-    # 🔹 Build model for Keras Tuner
+    # Build LSTM model with Keras Tuner
     def build_model_tuner(self, hp):
         model = Sequential()
-        # Tune number of units for first LSTM layer
         units_1 = hp.Int('units_1', min_value=32, max_value=128, step=32)
         model.add(Bidirectional(LSTM(units_1, return_sequences=True), input_shape=(60,1)))
-        model.add(Dropout(hp.Float('dropout_1', min_value=0.2, max_value=0.5, step=0.1)))
-        
-        # Tune number of units for second LSTM layer
+        model.add(Dropout(hp.Float('dropout_1', 0.2, 0.5, step=0.1)))
+
         units_2 = hp.Int('units_2', min_value=32, max_value=128, step=32)
         model.add(Bidirectional(LSTM(units_2)))
-        model.add(Dropout(hp.Float('dropout_2', min_value=0.2, max_value=0.5, step=0.1)))
-        
-        model.add(Dense(hp.Int('dense_units', min_value=16, max_value=64, step=16), activation='relu'))
+        model.add(Dropout(hp.Float('dropout_2', 0.2, 0.5, step=0.1)))
+
+        model.add(Dense(hp.Int('dense_units', 16, 64, step=16), activation='relu'))
         model.add(Dense(1))
-        
+
         lr = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4])
         model.compile(optimizer=Adam(learning_rate=lr), loss='mean_squared_error')
         return model
 
+    # Train LSTM model
     def train_model(self, X_train, y_train):
         tuner = kt.RandomSearch(
             self.build_model_tuner,
             objective='val_loss',
-            max_trials=5,   # Number of hyperparameter combinations to try
+            max_trials=5,
             executions_per_trial=1,
             directory='stock_tuner',
             project_name='stock_prediction'
         )
         early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1)
         tuner.search(X_train, y_train, epochs=50, batch_size=32, validation_split=0.1, callbacks=[early_stop], verbose=1)
-        
-        # Get the best model
+
         self.model = tuner.get_best_models(num_models=1)[0]
         best_hp = tuner.get_best_hyperparameters(num_trials=1)[0]
         print("\nBest Hyperparameters Found:")
-        print(f"Units LSTM Layer 1: {best_hp.get('units_1')}")
-        print(f"Dropout Layer 1: {best_hp.get('dropout_1')}")
-        print(f"Units LSTM Layer 2: {best_hp.get('units_2')}")
-        print(f"Dropout Layer 2: {best_hp.get('dropout_2')}")
-        print(f"Dense Layer Units: {best_hp.get('dense_units')}")
+        print(f"LSTM Layer 1 Units: {best_hp.get('units_1')}")
+        print(f"Dropout 1: {best_hp.get('dropout_1')}")
+        print(f"LSTM Layer 2 Units: {best_hp.get('units_2')}")
+        print(f"Dropout 2: {best_hp.get('dropout_2')}")
+        print(f"Dense Units: {best_hp.get('dense_units')}")
         print(f"Learning Rate: {best_hp.get('learning_rate')}")
 
+    # Evaluate model
     def evaluate_model(self, X_test, y_test):
         y_pred = self.model.predict(X_test)
         y_test_actual = self.scaler.inverse_transform(y_test.reshape(-1, 1))
         y_pred_actual = self.scaler.inverse_transform(y_pred)
         return y_test_actual, y_pred_actual
 
+    # Print performance metrics
     def print_metrics(self, y_test_actual, y_pred_actual):
         mse = mean_squared_error(y_test_actual, y_pred_actual)
         rmse = np.sqrt(mse)
         mae = mean_absolute_error(y_test_actual, y_pred_actual)
         r2 = r2_score(y_test_actual, y_pred_actual)
         mape = np.mean(np.abs((y_test_actual - y_pred_actual) / y_test_actual)) * 100
-       
         print(f"\nModel Performance on Test Data:")
-        print(f"RMSE: {rmse:.2f}")
-        print(f"MAE: {mae:.2f}")
-        print(f"R2 Score: {r2:.2f}")
-        print(f"MAPE: {mape:.2f}%")
+        print(f"RMSE: {rmse:.2f}, MAE: {mae:.2f}, R2: {r2:.2f}, MAPE: {mape:.2f}%")
 
+    # Predict next 7 days
     def predict_future(self, X_last):
         current_sequence = X_last.flatten().copy()
         last_date = self.df.index[-1]
@@ -130,7 +130,7 @@ class StockPredictor:
         for i in range(self.prediction_days):
             next_close = self.model.predict(current_sequence.reshape(1, -1, 1))[0, 0]
             next_close = self.scaler.inverse_transform(np.array([[next_close]]))[0, 0]
-            open_price = last_close * (1 + np.random.uniform(-0.005, 0.005)) if i == 0 else future_df['Close'].iloc[i - 1] * (1 + np.random.uniform(-0.005, 0.005))
+            open_price = last_close * (1 + np.random.uniform(-0.005, 0.005)) if i == 0 else future_df['Close'].iloc[i-1] * (1 + np.random.uniform(-0.005, 0.005))
             high = next_close * (1 + np.random.uniform(0, 0.01))
             low = next_close * (1 - np.random.uniform(0, 0.01))
             future_df.iloc[i] = [open_price, high, low, next_close]
@@ -140,26 +140,31 @@ class StockPredictor:
         self.future_predictions = future_df
         return future_df
 
-    # Visualization and run methods remain unchanged
+    # Visualize historical + predicted data
     def visualize_results(self, y_test_actual, y_pred_actual):
         last_date = self.df.index[-1]
         test_dates = pd.date_range(start=self.df.index[-len(y_test_actual)], end=last_date)
+
         fig = make_subplots(rows=2, cols=1, shared_xaxes=False, vertical_spacing=0.1,
                             subplot_titles=('Historical Data', 'Predictions'))
 
-        fig.add_trace(go.Candlestick(x=self.df.index[-100:], open=self.df['Open'][-100:], high=self.df['High'][-100:], low=self.df['Low'][-100:], close=self.df['Close'][-100:], name='Price'), row=1, col=1)
+        # Historical Candlestick + MA
+        fig.add_trace(go.Candlestick(x=self.df.index[-100:], open=self.df['Open'][-100:], high=self.df['High'][-100:], 
+                                     low=self.df['Low'][-100:], close=self.df['Close'][-100:], name='Price'), row=1, col=1)
         fig.add_trace(go.Scatter(x=self.df.index[-100:], y=self.df['MA_50'][-100:], line=dict(color='blue', width=1), name='50-day MA'), row=1, col=1)
         fig.add_trace(go.Scatter(x=self.df.index[-100:], y=self.df['MA_200'][-100:], line=dict(color='red', width=1), name='200-day MA'), row=1, col=1)
-        fig.add_trace(go.Bar(x=self.df.index[-100:], y=self.df['Volume'][-100:], marker_color='rgba(100, 100, 100, 0.5)', name='Volume', yaxis='y2'), row=1, col=1)
+        fig.add_trace(go.Bar(x=self.df.index[-100:], y=self.df['Volume'][-100:], marker_color='rgba(100,100,100,0.5)', name='Volume', yaxis='y2'), row=1, col=1)
 
+        # Predictions
         fig.add_trace(go.Scatter(x=test_dates, y=y_test_actual.flatten(), line=dict(color='blue', width=2), name='Actual Price'), row=2, col=1)
         fig.add_trace(go.Scatter(x=test_dates, y=y_pred_actual.flatten(), line=dict(color='red', width=2, dash='dot'), name='Predicted Price'), row=2, col=1)
-        fig.add_trace(go.Scatter(x=self.future_dates[:1], y=self.future_predictions['Close'][:1], line=dict(color='green', width=2, dash='dot'), name='1-day Forecast'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=self.future_dates, y=self.future_predictions['Close'], line=dict(color='green', width=2, dash='dot'), name='7-Day Forecast'), row=2, col=1)
 
-        fig.update_layout(title=f'{self.ticker} Stock Analysis & 1-Day Prediction', height=850, xaxis_rangeslider_visible=False,
-                           showlegend=True, yaxis2=dict(overlaying='y', side='right', showgrid=False))
+        fig.update_layout(title=f'{self.ticker} Stock Analysis & 7-Day Prediction', height=850, xaxis_rangeslider_visible=False,
+                          showlegend=True, yaxis2=dict(overlaying='y', side='right', showgrid=False))
         fig.show()
 
+    # Run everything
     def run(self, ticker="AAPL"):
         try:
             start_date, end_date = self.get_user_input(ticker)
@@ -171,10 +176,14 @@ class StockPredictor:
             self.print_metrics(y_test_actual, y_pred_actual)
             future_predictions = self.predict_future(X_test[-1])
             self.visualize_results(y_test_actual, y_pred_actual)
-            print("\nNext day predicted close:", future_predictions['Close'].iloc[0])
+            print("\nPredicted Close Prices for Next 7 Days:")
+            print(future_predictions['Close'])
         except Exception as e:
-            print(f"\nError: {str(e)}\nPlease check your inputs and try again.")
+            print(f"Error: {e}\nPlease check your inputs and try again.")
 
+# Example usage:
+# predictor = StockPredictor()
+# predictor.run("AAPL")
 if __name__ == "__main__":
     predictor = StockPredictor()
     predictor.run("AAPL")  # You can change ticker here
