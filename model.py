@@ -1,20 +1,20 @@
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
 import yfinance as yf
 import datetime as dt
+
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM, Bidirectional
 from keras.callbacks import EarlyStopping
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from keras.optimizers import Adam
+
+import keras_tuner as kt
+
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import warnings
-
-warnings.filterwarnings('ignore')
-plt.style.use('ggplot')
-
 
 class StockPredictor:
     def __init__(self):
@@ -29,7 +29,7 @@ class StockPredictor:
     def get_user_input(self, ticker):
         self.ticker = ticker
         end_date = dt.datetime.now()
-        start_date = end_date - dt.timedelta(days=5*365)  # 5 years of data
+        start_date = end_date - dt.timedelta(days=7*365)
         return start_date, end_date
 
     def fetch_live_data(self, start_date, end_date):
@@ -37,6 +37,7 @@ class StockPredictor:
         if self.df.empty:
             raise ValueError("No data found for the given ticker and date range.")
         self.df['Pct_Change'] = self.df['Close'].pct_change() * 100
+        self.df.ffill(inplace=True)
         return self.df
 
     def add_technical_indicators(self):
@@ -57,28 +58,48 @@ class StockPredictor:
         split = int(0.9 * len(X))
         return X[:split], X[split:], y[:split], y[split:]
 
-    def build_model(self, input_shape):
+    # 🔹 Build model for Keras Tuner
+    def build_model_tuner(self, hp):
         model = Sequential()
-        model.add(Bidirectional(LSTM(128, return_sequences=True), input_shape=input_shape))
-        model.add(Dropout(0.3))
-        model.add(Bidirectional(LSTM(128)))
-        model.add(Dropout(0.3))
-        model.add(Dense(32, activation='relu'))
+        # Tune number of units for first LSTM layer
+        units_1 = hp.Int('units_1', min_value=32, max_value=128, step=32)
+        model.add(Bidirectional(LSTM(units_1, return_sequences=True), input_shape=(60,1)))
+        model.add(Dropout(hp.Float('dropout_1', min_value=0.2, max_value=0.5, step=0.1)))
+        
+        # Tune number of units for second LSTM layer
+        units_2 = hp.Int('units_2', min_value=32, max_value=128, step=32)
+        model.add(Bidirectional(LSTM(units_2)))
+        model.add(Dropout(hp.Float('dropout_2', min_value=0.2, max_value=0.5, step=0.1)))
+        
+        model.add(Dense(hp.Int('dense_units', min_value=16, max_value=64, step=16), activation='relu'))
         model.add(Dense(1))
-        model.compile(optimizer='adam', loss='mean_squared_error')
+        
+        lr = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4])
+        model.compile(optimizer=Adam(learning_rate=lr), loss='mean_squared_error')
         return model
 
     def train_model(self, X_train, y_train):
-        self.model = self.build_model((X_train.shape[1], 1))
-        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-        self.model.fit(
-            X_train, y_train,
-            epochs=50, 
-            batch_size=32,
-            validation_split=0.1,
-            callbacks=[early_stop],
-            verbose=1
+        tuner = kt.RandomSearch(
+            self.build_model_tuner,
+            objective='val_loss',
+            max_trials=5,   # Number of hyperparameter combinations to try
+            executions_per_trial=1,
+            directory='stock_tuner',
+            project_name='stock_prediction'
         )
+        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1)
+        tuner.search(X_train, y_train, epochs=50, batch_size=32, validation_split=0.1, callbacks=[early_stop], verbose=1)
+        
+        # Get the best model
+        self.model = tuner.get_best_models(num_models=1)[0]
+        best_hp = tuner.get_best_hyperparameters(num_trials=1)[0]
+        print("\nBest Hyperparameters Found:")
+        print(f"Units LSTM Layer 1: {best_hp.get('units_1')}")
+        print(f"Dropout Layer 1: {best_hp.get('dropout_1')}")
+        print(f"Units LSTM Layer 2: {best_hp.get('units_2')}")
+        print(f"Dropout Layer 2: {best_hp.get('dropout_2')}")
+        print(f"Dense Layer Units: {best_hp.get('dense_units')}")
+        print(f"Learning Rate: {best_hp.get('learning_rate')}")
 
     def evaluate_model(self, X_test, y_test):
         y_pred = self.model.predict(X_test)
@@ -91,13 +112,16 @@ class StockPredictor:
         rmse = np.sqrt(mse)
         mae = mean_absolute_error(y_test_actual, y_pred_actual)
         r2 = r2_score(y_test_actual, y_pred_actual)
+        mape = np.mean(np.abs((y_test_actual - y_pred_actual) / y_test_actual)) * 100
+       
         print(f"\nModel Performance on Test Data:")
         print(f"RMSE: {rmse:.2f}")
         print(f"MAE: {mae:.2f}")
         print(f"R2 Score: {r2:.2f}")
+        print(f"MAPE: {mape:.2f}%")
 
     def predict_future(self, X_last):
-        current_sequence = X_last.copy()
+        current_sequence = X_last.flatten().copy()
         last_date = self.df.index[-1]
         self.future_dates = pd.date_range(start=last_date + dt.timedelta(days=1), periods=self.prediction_days)
         future_df = pd.DataFrame(index=self.future_dates, columns=['Open', 'High', 'Low', 'Close'])
@@ -116,6 +140,7 @@ class StockPredictor:
         self.future_predictions = future_df
         return future_df
 
+    # Visualization and run methods remain unchanged
     def visualize_results(self, y_test_actual, y_pred_actual):
         last_date = self.df.index[-1]
         test_dates = pd.date_range(start=self.df.index[-len(y_test_actual)], end=last_date)
@@ -132,7 +157,7 @@ class StockPredictor:
         fig.add_trace(go.Scatter(x=self.future_dates[:1], y=self.future_predictions['Close'][:1], line=dict(color='green', width=2, dash='dot'), name='1-day Forecast'), row=2, col=1)
 
         fig.update_layout(title=f'{self.ticker} Stock Analysis & 1-Day Prediction', height=850, xaxis_rangeslider_visible=False,
-                          showlegend=True, yaxis2=dict(overlaying='y', side='right', showgrid=False))
+                           showlegend=True, yaxis2=dict(overlaying='y', side='right', showgrid=False))
         fig.show()
 
     def run(self, ticker="AAPL"):
@@ -150,9 +175,6 @@ class StockPredictor:
         except Exception as e:
             print(f"\nError: {str(e)}\nPlease check your inputs and try again.")
 
-
-# -----------------------
-# Run the predictor
 if __name__ == "__main__":
     predictor = StockPredictor()
-    predictor.run("AAPL")  # change ticker here if needed
+    predictor.run("AAPL")  # You can change ticker here
