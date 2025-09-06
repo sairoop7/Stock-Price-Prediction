@@ -41,12 +41,14 @@ class StockPredictor:
         self.df.ffill(inplace=True)
         return self.df
 
-    # Add technical indicators
     def add_technical_indicators(self):
-        self.df['MA_50'] = self.df['Close'].rolling(window=50).mean()
-        self.df['MA_200'] = self.df['Close'].rolling(window=200).mean()
-        self.df.ffill(inplace=True)
+        # Handle missing data first
+        self.df.ffill(inplace=True)   # forward fill missing values
+        # Moving averages with min_periods to avoid NaN in the first rows
+        self.df['MA_50'] = self.df['Close'].rolling(window=50, min_periods=1).mean()
+        self.df['MA_200'] = self.df['Close'].rolling(window=200, min_periods=1).mean()
         return self.df
+
 
     # Prepare data
     def prepare_data(self, look_back=60):
