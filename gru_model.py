@@ -12,12 +12,12 @@ from keras.callbacks import EarlyStopping
 from keras.optimizers import Adam
 
 import keras_tuner as kt
-
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+
 class StockPredictor:
-    def __init__(self):
+    def __init__(self, streamlit_mode=False):
         self.ticker = None
         self.df = None
         self.scaler = None
@@ -25,6 +25,7 @@ class StockPredictor:
         self.prediction_days = 7  # predict next 7 days
         self.future_predictions = None
         self.future_dates = None
+        self.streamlit_mode = streamlit_mode  # fixed flag
 
     # Fetch historical data
     def get_user_input(self, ticker):
@@ -42,13 +43,10 @@ class StockPredictor:
         return self.df
 
     def add_technical_indicators(self):
-        # Handle missing data first
-        self.df.ffill(inplace=True)   # forward fill missing values
-        # Moving averages with min_periods to avoid NaN in the first rows
+        self.df.ffill(inplace=True)
         self.df['MA_50'] = self.df['Close'].rolling(window=50, min_periods=1).mean()
         self.df['MA_200'] = self.df['Close'].rolling(window=200, min_periods=1).mean()
         return self.df
-
 
     # Prepare data
     def prepare_data(self, look_back=60):
@@ -67,7 +65,7 @@ class StockPredictor:
     def build_model_tuner(self, hp):
         model = Sequential()
         units_1 = hp.Int('units_1', min_value=32, max_value=128, step=32)
-        model.add(Bidirectional(GRU(units_1, return_sequences=True), input_shape=(60,1)))
+        model.add(Bidirectional(GRU(units_1, return_sequences=True), input_shape=(60, 1)))
         model.add(Dropout(hp.Float('dropout_1', 0.2, 0.5, step=0.1)))
 
         units_2 = hp.Int('units_2', min_value=32, max_value=128, step=32)
@@ -175,11 +173,17 @@ class StockPredictor:
             y_test_actual, y_pred_actual = self.evaluate_model(X_test, y_test)
             self.print_metrics(y_test_actual, y_pred_actual)
             self.predict_future(X_test[-1])
-            self.visualize_results(y_test_actual, y_pred_actual)
+
+            # Only visualize when not in Streamlit mode
+            if not self.streamlit_mode:
+                self.visualize_results(y_test_actual, y_pred_actual)
+
             print("\nPredicted Close Prices for Next 7 Days:")
             print(self.future_predictions['Close'])
+
         except Exception as e:
             print(f"Error: {e}\nPlease check your inputs and try again.")
+
 
 if __name__ == "__main__":
     predictor = StockPredictor()

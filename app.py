@@ -1,28 +1,36 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-from gru_model import StockPredictor  # import your GRU predictor class
+from gru_model import StockPredictor
 
-# Streamlit UI
-st.title("📈 Stock Price Prediction with GRU")
-st.markdown("This app predicts stock prices using a Bidirectional GRU model.")
+st.title("📈 Stock Price Prediction (Next 7 Days)")
 
-# User input
-ticker = st.text_input("Enter stock ticker (e.g., AAPL, MSFT, TSLA):", "AAPL")
+st.write("""
+Enter the ticker symbol of a company to get its 7-day stock price prediction.  
+Here are some examples you can try:  
+- Microsoft → `MSFT`  
+- Apple → `AAPL`  
+- Amazon → `AMZN`  
+- Alphabet (Google) → `GOOGL` or `GOOG`  
+- Meta Platforms → `META`  
+- Broadcom → `AVGO`  
+- Tesla → `TSLA`  
+- Berkshire Hathaway → `BRK.A` or `BRK.B`  
+""")
+
+ticker = st.text_input("Enter Stock Ticker Symbol:", "MSFT")
 
 if st.button("Predict"):
-    # Run prediction
-    predictor = StockPredictor()
+    predictor = StockPredictor(streamlit_mode=True)  # ✅ Run in streamlit mode
     predictor.run(ticker)
 
-    # Show predictions
-    st.subheader("Predicted Close Prices for Next 7 Days")
-    st.dataframe(predictor.future_predictions[['Close']])
+    if predictor.future_predictions is not None:
+        st.subheader(f"📊 Next 7-Day Predictions for {ticker}")
 
-    # Plot results
-    st.subheader("📊 Historical vs Predicted Prices")
-    fig, ax = plt.subplots(figsize=(10, 5))
-    predictor.df['Close'].tail(200).plot(ax=ax, label="Historical Close")
-    predictor.future_predictions['Close'].plot(ax=ax, label="Predicted Close", color="green")
-    ax.legend()
-    st.pyplot(fig)
+        # Format with 2 decimals
+        table = predictor.future_predictions[['Close']].rename(
+            columns={"Close": "Predicted Closing Price"}
+        ).round(2)
+        st.write(table)
+
+        # Add line chart
+        st.line_chart(table)
